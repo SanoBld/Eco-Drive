@@ -12,7 +12,7 @@
   <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
   <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@24,400,1,0&display=swap" />
-
+  <link rel="manifest" href="manifest.json">
   <style>
     /* ============================================================
        CSS VARIABLES — Light & Dark & Color Themes
@@ -122,11 +122,23 @@
       display: flex;
       flex-direction: column;
       transition: background var(--dur-l) var(--ease-std), color var(--dur-l) var(--ease-std);
+      color-scheme: light;
     }
+    body.dark { color-scheme: dark; }
 
     h1, h2, h3 { margin: 0; font-family: 'Outfit', sans-serif; font-weight: 600; }
     button { font-family: 'Outfit', sans-serif; }
     input, select { font-family: 'Outfit', sans-serif; }
+
+    /* Smooth dark mode transitions on all surface elements */
+    #bottom-sheet, .nav-bar, dialog, .app-logo, .mode-badge,
+    .field, .stat-tile, .fav-item, .v-card, .eco-tip,
+    .trip-chip, .stats-hero, .dialog-header, .dialog-scroll,
+    .result-card, .chip, .btn, .toast {
+      transition-property: background, background-color, color, border-color, box-shadow;
+      transition-duration: var(--dur-l);
+      transition-timing-function: var(--ease-std);
+    }
 
     /* ============================================================
        MAP
@@ -434,14 +446,23 @@
       width: 100%; font-size: 0.95rem;
       color: var(--on-surface); outline: none;
       padding-top: 16px; padding-bottom: 4px;
+      color-scheme: inherit;
     }
-    .field select { padding-top: 0; padding-bottom: 0; cursor: pointer; }
+    .field select {
+      padding-top: 0; padding-bottom: 0; cursor: pointer;
+      appearance: none; -webkit-appearance: none;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='16' height='16' viewBox='0 0 24 24'%3E%3Cpath fill='%23707972' d='M7 10l5 5 5-5z'/%3E%3C/svg%3E");
+      background-repeat: no-repeat;
+      background-position: right 0px center;
+      padding-right: 22px;
+      background-color: transparent;
+    }
     .field label {
       position: absolute; left: 12px; top: 50%;
       transform: translateY(-50%);
       color: var(--outline); font-size: 0.95rem;
       pointer-events: none;
-      transition: all var(--dur-m) var(--ease-std);
+      transition: all var(--dur-m) var(--ease-std), background var(--dur-l);
       background: var(--surface-container-lowest);
       padding: 0 4px;
     }
@@ -462,6 +483,25 @@
     .field .icon-btn .material-symbols-rounded { font-size: 20px; }
     .field .icon-btn:hover { background: var(--surface-container); color: var(--primary); }
     .field .icon-btn:active { transform: scale(0.88); }
+
+    /* Autofill dark mode fix */
+    input:-webkit-autofill,
+    input:-webkit-autofill:hover,
+    input:-webkit-autofill:focus {
+      -webkit-text-fill-color: var(--on-surface);
+      -webkit-box-shadow: 0 0 0px 1000px var(--surface-container-lowest) inset;
+      transition: background-color 5000s ease-in-out 0s;
+      caret-color: var(--primary);
+    }
+    /* Select option styling */
+    .field select option {
+      background: var(--surface-container-lowest);
+      color: var(--on-surface);
+    }
+    /* Scrollbars dark mode */
+    .sheet-scroll {
+      scrollbar-color: var(--outline-variant) transparent;
+    }
 
     /* ============================================================
        VEHICLE GRID
@@ -1726,12 +1766,12 @@ function fitRoute() {
 }
 
 /* ================================================================
-   CAR ANIMATION — Circle marker, no rotation, smooth movement
+   CAR ANIMATION — Circle marker, constant-speed distance-based
 ================================================================ */
 function animateCar(coords) {
   if (!coords || coords.length < 2) return;
-  if (_carMarker) { map.removeLayer(_carMarker); }
-  if (_animId)    { cancelAnimationFrame(_animId); }
+  if (_carMarker) { map.removeLayer(_carMarker); _carMarker = null; }
+  if (_animId)    { cancelAnimationFrame(_animId); _animId = null; }
 
   const primaryColor = getComputedStyle(document.body).getPropertyValue('--primary').trim() || '#006c45';
   const onPrimary    = getComputedStyle(document.body).getPropertyValue('--on-primary').trim() || '#ffffff';
@@ -1747,23 +1787,41 @@ function animateCar(coords) {
 
   _carMarker = L.marker(coords[0], { icon, zIndexOffset:999 }).addTo(map);
 
-  const TOTAL = Math.max(coords.length * 40, 8000); // ms — slow, smooth
+  // Pre-compute cumulative distances along polyline for constant-speed movement
+  const cumDist = [0];
+  for (let i = 1; i < coords.length; i++) {
+    const dlat = coords[i].lat - coords[i-1].lat;
+    const dlng = coords[i].lng - coords[i-1].lng;
+    cumDist.push(cumDist[i-1] + Math.sqrt(dlat*dlat + dlng*dlng));
+  }
+  const totalDist = cumDist[cumDist.length - 1];
+
+  // Loop duration: min 14s, grows with route length
+  const LOOP_MS = Math.max(coords.length * 35, 14000);
+
   let startTs = null;
+  let lastIdx  = 0; // cache for forward-scan optimisation
 
   function step(ts) {
     if (!startTs) startTs = ts;
-    const elapsed = ts - startTs;
-    let progress = (elapsed % TOTAL) / TOTAL;
+    const elapsed = (ts - startTs) % LOOP_MS;
+    // Reset index at loop restart
+    if (elapsed < 50) lastIdx = 0;
+    const target = (elapsed / LOOP_MS) * totalDist;
 
-    const n = coords.length - 1;
-    const idx = Math.floor(progress * n);
-    const frac = progress * n - idx;
-    const c1 = coords[Math.min(idx,   n)];
-    const c2 = coords[Math.min(idx+1, n)];
+    // Forward scan from lastIdx (amortised O(1) for sequential access)
+    while (lastIdx < cumDist.length - 2 && cumDist[lastIdx + 1] <= target) lastIdx++;
 
-    const lat = c1.lat + (c2.lat - c1.lat) * frac;
-    const lng = c1.lng + (c2.lng - c1.lng) * frac;
-    _carMarker.setLatLng([lat, lng]);
+    const i   = Math.min(lastIdx, coords.length - 2);
+    const seg = cumDist[i + 1] - cumDist[i];
+    const t   = seg > 1e-10 ? (target - cumDist[i]) / seg : 0;
+
+    const c1 = coords[i];
+    const c2 = coords[i + 1];
+    _carMarker.setLatLng([
+      c1.lat + (c2.lat - c1.lat) * t,
+      c1.lng + (c2.lng - c1.lng) * t
+    ]);
 
     _animId = requestAnimationFrame(step);
   }
@@ -2178,22 +2236,38 @@ function loadTrip(input) {
 ================================================================ */
 async function shareTrip() {
   haptic('medium');
-  const text = `🚗 Eco-Drive — Mon trajet
 
-📍 Distance : ${document.getElementById('dist-val').textContent}
-⏱️ Durée : ${document.getElementById('time-val').textContent}
+  // Collect waypoints
+  const inputs  = Array.from(document.querySelectorAll('#wp-container input[type="text"]'));
+  const addrs   = inputs.map(i => i.value.trim()).filter(Boolean);
+  const depart  = addrs[0]   || '—';
+  const arrivee = addrs[addrs.length - 1] || '—';
+  const etapes  = addrs.slice(1, -1);
+
+  // Build itinerary line
+  let itinerary = `🚦 Départ   : ${depart}\n`;
+  etapes.forEach((e, i) => { itinerary += `📌 Étape ${i+1} : ${e}\n`; });
+  itinerary += `🏁 Arrivée  : ${arrivee}`;
+
+  const text =
+`🚗 Eco-Drive — Mon trajet
+
+${itinerary}
+
+📏 Distance : ${document.getElementById('dist-val').textContent}
+⏱️ Durée    : ${document.getElementById('time-val').textContent}
 ⛽ Carburant : ${document.getElementById('fuel-amount').textContent}
 💶 Coût estimé : ${document.getElementById('total-val').textContent}
-🌿 CO₂ : ${document.getElementById('co2-amount').textContent}
+🌿 CO₂      : ${document.getElementById('co2-amount').textContent}
 
-Calculé avec Eco-Drive`;
+🔗 https://sanobld.github.io/Eco-Drive/`;
 
   if (navigator.share) {
     try {
-      await navigator.share({ title:'Eco-Drive', text });
+      await navigator.share({ title: 'Eco-Drive — Mon trajet', text });
       toast('Partagé avec succès'); haptic('success'); updateStats();
       return;
-    } catch(e) { if (e.name==='AbortError') return; }
+    } catch(e) { if (e.name === 'AbortError') return; }
   }
   navigator.clipboard?.writeText(text)
     .then(() => { toast('Copié dans le presse-papier'); haptic('success'); updateStats(); })
@@ -2359,5 +2433,15 @@ window.addEventListener('load', () => {
   toast('Eco-Drive prêt');
 });
 </script>
+<script>
+  if ('serviceWorker' in navigator) {
+    window.addEventListener('load', () => {
+      navigator.serviceWorker.register('./sw.js')
+        .then(() => console.log('Service Worker enregistré'))
+        .catch((err) => console.log('Erreur SW:', err));
+    });
+  }
+</script>
+</body>
 </body>
 </html>
