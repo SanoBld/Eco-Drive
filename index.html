@@ -51,6 +51,12 @@
       --radius-xs: 4px;
       --radius-pill: 100px;
 
+      --spacing-xs: 4px;
+      --spacing-s: 8px;
+      --spacing-m: 14px;
+      --spacing-l: 20px;
+      --spacing-xl: 28px;
+
       --shadow-1: 0 1px 4px rgba(0,0,0,0.10);
       --shadow-2: 0 2px 12px rgba(0,0,0,0.12);
       --shadow-3: 0 6px 24px rgba(0,0,0,0.14);
@@ -948,6 +954,72 @@
       animation: shrink-out 0.28s var(--ease-std) forwards;
       transform-origin: top;
     }
+
+    /* ============================================================
+       FUEL STATION MARKERS & POPUP
+    ============================================================ */
+    .fuel-pin {
+      width: 36px; height: 36px;
+      background: var(--tertiary-container, #bfe9fa);
+      border: 2.5px solid var(--tertiary, #3b6472);
+      border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.22);
+      cursor: pointer;
+      transition: transform var(--dur-s) var(--ease-overshoot);
+      font-size: 18px;
+    }
+    .fuel-pin:hover { transform: scale(1.15); }
+
+    .fuel-popup-inner {
+      font-family: 'Outfit', sans-serif;
+      min-width: 200px;
+    }
+    .fuel-popup-name {
+      font-weight: 700; font-size: 0.9rem;
+      margin-bottom: var(--spacing-xs);
+      color: var(--on-surface, #181c19);
+    }
+    .fuel-popup-addr {
+      font-size: 0.75rem; color: var(--outline, #707972);
+      margin-bottom: var(--spacing-s);
+    }
+    .fuel-popup-prices {
+      display: grid; grid-template-columns: 1fr 1fr;
+      gap: var(--spacing-xs);
+      margin-bottom: var(--spacing-s);
+    }
+    .fuel-price-chip {
+      background: var(--surface-container, #e9ebe6);
+      border-radius: var(--radius-s);
+      padding: 5px 8px;
+      display: flex; flex-direction: column; align-items: center;
+      cursor: pointer;
+      border: 1.5px solid transparent;
+      transition: border-color 0.15s, background 0.15s;
+    }
+    .fuel-price-chip:hover {
+      border-color: var(--primary, #006c45);
+      background: var(--primary-container, #9ff5c6);
+    }
+    .fuel-price-chip .fp-label {
+      font-size: 0.65rem; font-weight: 600;
+      color: var(--outline, #707972); text-transform: uppercase;
+    }
+    .fuel-price-chip .fp-val {
+      font-size: 0.92rem; font-weight: 700;
+      color: var(--primary, #006c45);
+    }
+    .fuel-popup-hint {
+      font-size: 0.68rem; color: var(--outline);
+      text-align: center; margin-top: 2px;
+    }
+
+    /* Stations FAB active state */
+    .fab.fab-stations-active {
+      background: var(--primary) !important;
+      color: var(--on-primary) !important;
+    }
   </style>
 </head>
 <body>
@@ -979,12 +1051,17 @@
 
   <!-- FABs -->
   <div class="fab-stack">
-    <button class="fab" onclick="fitRoute()" aria-label="Recentrer">
+    <button class="fab" onclick="fitRoute()" aria-label="Recentrer la carte">
       <span class="material-symbols-rounded">crop_free</span>
     </button>
     <button class="fab" style="background:var(--tertiary-container);color:var(--on-tertiary-container);"
-            onclick="locateMe('startAddr', this)" aria-label="Ma position">
+            onclick="locateMe('startAddr', this)" aria-label="Ma position actuelle">
       <span class="material-symbols-rounded">my_location</span>
+    </button>
+    <button class="fab" id="fab-stations"
+            style="background:var(--surface-container-highest);color:var(--on-surface);"
+            onclick="toggleFuelStations(this)" aria-label="Afficher les stations proches">
+      <span class="material-symbols-rounded">local_gas_station</span>
     </button>
   </div>
 </div>
@@ -1000,16 +1077,16 @@
     <!-- ── TAB: TRAJET ── -->
     <div id="tab-route" class="tab active">
       <div class="toolbar">
-        <button class="chip" onclick="saveTrip()">
+        <button class="chip" onclick="saveTrip()" aria-label="Sauvegarder le trajet">
           <span class="material-symbols-rounded">save</span>Sauvegarder
         </button>
-        <button class="chip" onclick="document.getElementById('fileInput').click()">
+        <button class="chip" onclick="document.getElementById('fileInput').click()" aria-label="Charger un trajet">
           <span class="material-symbols-rounded">upload</span>Charger
         </button>
-        <button class="chip" onclick="addWaypoint()">
+        <button class="chip" onclick="addWaypoint()" aria-label="Ajouter une étape">
           <span class="material-symbols-rounded">add_location</span>Étape
         </button>
-        <button class="chip" id="map-chip" onclick="toggleMapClick()">
+        <button class="chip" id="map-chip" onclick="toggleMapClick()" aria-label="Activer le clic sur la carte">
           <span class="material-symbols-rounded" id="map-chip-icon">touch_app</span>Clic carte
         </button>
       </div>
@@ -1048,22 +1125,22 @@
       <p class="section-title">Mon Véhicule</p>
 
       <div class="vehicle-grid">
-        <div class="v-card selected" onclick="selectVehicle('sedan',this)" data-vt="sedan">
+        <div class="v-card selected" onclick="selectVehicle('sedan',this)" data-vt="sedan" role="button" aria-label="Véhicule Berline" tabindex="0">
           <span class="material-symbols-rounded">directions_car</span><p>Berline</p>
         </div>
-        <div class="v-card" onclick="selectVehicle('suv',this)" data-vt="suv">
+        <div class="v-card" onclick="selectVehicle('suv',this)" data-vt="suv" role="button" aria-label="Véhicule SUV" tabindex="0">
           <span class="material-symbols-rounded">airport_shuttle</span><p>SUV</p>
         </div>
-        <div class="v-card" onclick="selectVehicle('city',this)" data-vt="city">
+        <div class="v-card" onclick="selectVehicle('city',this)" data-vt="city" role="button" aria-label="Véhicule Citadine" tabindex="0">
           <span class="material-symbols-rounded">electric_car</span><p>Citadine</p>
         </div>
-        <div class="v-card" onclick="selectVehicle('moto',this)" data-vt="moto">
+        <div class="v-card" onclick="selectVehicle('moto',this)" data-vt="moto" role="button" aria-label="Véhicule Moto" tabindex="0">
           <span class="material-symbols-rounded">two_wheeler</span><p>Moto</p>
         </div>
-        <div class="v-card" onclick="selectVehicle('van',this)" data-vt="van">
+        <div class="v-card" onclick="selectVehicle('van',this)" data-vt="van" role="button" aria-label="Véhicule Utilitaire" tabindex="0">
           <span class="material-symbols-rounded">local_shipping</span><p>Utilitaire</p>
         </div>
-        <div class="v-card" onclick="selectVehicle('custom',this)" data-vt="custom">
+        <div class="v-card" onclick="selectVehicle('custom',this)" data-vt="custom" role="button" aria-label="Véhicule personnalisé" tabindex="0">
           <span class="material-symbols-rounded">tune</span><p>Perso</p>
         </div>
       </div>
@@ -1123,11 +1200,11 @@
         </div>
       </div>
 
-      <button class="btn btn-tonal" onclick="addToFavorites()">
+      <button class="btn btn-tonal" onclick="addToFavorites()" aria-label="Ajouter aux favoris">
         <span class="material-symbols-rounded">favorite</span>
         Ajouter aux favoris
       </button>
-      <button class="btn btn-primary" onclick="shareTrip()">
+      <button class="btn btn-primary" onclick="shareTrip()" aria-label="Partager le récapitulatif">
         <span class="material-symbols-rounded">share</span>
         Partager le récapitulatif
       </button>
@@ -1843,7 +1920,10 @@ const PRESETS = {
 const CO2 = { essence:2.31, diesel:2.65, elec:0, ethanol:1.5, gpl:1.63 };
 
 function selectVehicle(type, el) {
-  haptic('light');
+  // Micro-interaction: double pulse vibration on selection
+  if (navigator.vibrate && document.getElementById('haptic-toggle').checked) {
+    navigator.vibrate([12, 60, 12]);
+  }
   document.querySelectorAll('.v-card').forEach(c => c.classList.remove('selected'));
   el.classList.add('selected');
   document.getElementById('vehicleType').value = type;
@@ -1966,6 +2046,134 @@ async function fetchFuelPrice(btnOrIcon) {
   } finally {
     icon.style.animation = '';
   }
+}
+
+/* ================================================================
+   FUEL STATIONS MAP
+================================================================ */
+let _stationMarkers = [];
+let _stationsVisible = false;
+
+async function toggleFuelStations(btn) {
+  haptic('medium');
+  if (_stationsVisible) {
+    clearFuelStations();
+    btn.classList.remove('fab-stations-active');
+    toast('Stations masquées');
+    return;
+  }
+  btn.innerHTML = '<div class="spin"></div>';
+  btn.disabled  = true;
+
+  try {
+    let center;
+    // Prefer route midpoint, fallback to map center
+    if (_routeCoords && _routeCoords.length > 1) {
+      const mid = _routeCoords[Math.floor(_routeCoords.length / 2)];
+      center = { lat: mid.lat, lng: mid.lng };
+    } else {
+      const c = map.getCenter();
+      center = { lat: c.lat, lng: c.lng };
+    }
+
+    const radius = 15; // km
+    const fields = 'id,nom,adresse,ville,cp,e10_prix,sp98_prix,sp95_prix,gazole_prix,e85_prix,gplc_prix,geom';
+    const where  = encodeURIComponent(
+      `within_distance(geom, geom'POINT(${center.lng} ${center.lat})', ${radius}km) ` +
+      `AND (e10_prix IS NOT NULL OR sp98_prix IS NOT NULL OR gazole_prix IS NOT NULL)`
+    );
+    const url = `https://data.economie.gouv.fr/api/explore/v2.1/catalog/datasets/prix-des-carburants-en-france-flux-instantane-v2/records?select=${fields}&where=${where}&limit=40`;
+
+    const resp = await fetch(url, { signal: AbortSignal.timeout(10000) });
+    if (!resp.ok) throw new Error('API error ' + resp.status);
+    const data = await resp.json();
+    const stations = data.results || [];
+
+    if (!stations.length) {
+      toast('Aucune station trouvée dans ce périmètre', true);
+      return;
+    }
+
+    stations.forEach(s => {
+      if (!s.geom?.lon || !s.geom?.lat) return;
+      const lat = s.geom.lat, lng = s.geom.lon;
+
+      const icon = L.divIcon({
+        html: `<div class="fuel-pin" title="${s.nom || 'Station'}">⛽</div>`,
+        className: '',
+        iconSize:   [36, 36],
+        iconAnchor: [18, 18],
+        popupAnchor:[0, -20]
+      });
+
+      const marker = L.marker([lat, lng], { icon }).addTo(map);
+      marker.bindPopup(_buildStationPopup(s), { maxWidth: 260, className: 'fuel-popup' });
+      _stationMarkers.push(marker);
+    });
+
+    _stationsVisible = true;
+    btn.classList.add('fab-stations-active');
+    toast(`${_stationMarkers.length} stations affichées`);
+    haptic('success');
+
+  } catch (err) {
+    toast('Impossible de charger les stations', true);
+    haptic('error');
+  } finally {
+    btn.innerHTML = '<span class="material-symbols-rounded">local_gas_station</span>';
+    btn.disabled  = false;
+  }
+}
+
+function clearFuelStations() {
+  _stationMarkers.forEach(m => map.removeLayer(m));
+  _stationMarkers = [];
+  _stationsVisible = false;
+}
+
+function _buildStationPopup(s) {
+  const normalize = v => {
+    const n = parseFloat(v);
+    if (isNaN(n) || n <= 0) return null;
+    return n > 20 ? (n / 1000).toFixed(3) : n.toFixed(3);
+  };
+
+  const prices = [
+    { label: 'E10',    val: normalize(s.e10_prix),   field: 'e10'   },
+    { label: 'SP98',   val: normalize(s.sp98_prix),  field: 'sp98'  },
+    { label: 'SP95',   val: normalize(s.sp95_prix),  field: 'sp95'  },
+    { label: 'Gazole', val: normalize(s.gazole_prix),field: 'gazole'},
+    { label: 'E85',    val: normalize(s.e85_prix),   field: 'e85'   },
+    { label: 'GPL',    val: normalize(s.gplc_prix),  field: 'gpl'   },
+  ].filter(p => p.val !== null);
+
+  const pricesHtml = prices.map(p =>
+    `<div class="fuel-price-chip" onclick="applyStationPrice('${p.val}','${p.label}')" title="Utiliser ce prix">
+       <span class="fp-label">${p.label}</span>
+       <span class="fp-val">${p.val} €</span>
+     </div>`
+  ).join('');
+
+  return `<div class="fuel-popup-inner">
+    <div class="fuel-popup-name">${s.nom || 'Station service'}</div>
+    <div class="fuel-popup-addr">${[s.adresse, s.ville].filter(Boolean).join(' — ')}</div>
+    <div class="fuel-popup-prices">${pricesHtml || '<em style="font-size:0.78rem;color:var(--outline)">Prix non disponibles</em>'}</div>
+    <div class="fuel-popup-hint">Appuyez sur un prix pour l'utiliser</div>
+  </div>`;
+}
+
+function applyStationPrice(price, label) {
+  const val = parseFloat(price);
+  if (isNaN(val)) return;
+  document.getElementById('fuelPrice').value = val.toFixed(3);
+  document.getElementById('field-price').classList.add('filled');
+  document.getElementById('price-source').textContent = `Station · ${label} · ${val.toFixed(3)} €/L`;
+  calculate();
+  // Switch to vehicle tab so user sees the updated price
+  switchTab('vehicle');
+  toast(`Prix ${label} appliqué : ${val.toFixed(3)} €/L`);
+  haptic('success');
+  map.closePopup();
 }
 
 /* ================================================================
