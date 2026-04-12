@@ -1032,22 +1032,16 @@
 <!-- UI Overlay -->
 <div id="ui-layer">
   <div class="top-bar">
-    <div class="app-logo">
-      <div class="logo-dot">
-        <span class="material-symbols-rounded">eco</span>
-      </div>
-      Eco-Drive
-    </div>
+    <div></div>
     <div style="display:flex;gap:8px;pointer-events:auto;">
-      <div class="mode-badge" id="mode-badge">
-        <span class="material-symbols-rounded" id="mode-icon">light_mode</span>
-        <span id="mode-label">Jour</span>
-      </div>
       <button class="fab fab-sm" onclick="openSettings()" aria-label="Paramètres">
         <span class="material-symbols-rounded">settings</span>
       </button>
     </div>
   </div>
+  <!-- Refs masquées conservées pour applyDark() -->
+  <span id="mode-icon" style="display:none">light_mode</span>
+  <span id="mode-label" style="display:none">Jour</span>
 
   <!-- FABs -->
   <div class="fab-stack">
@@ -1461,13 +1455,13 @@ const sysDark = window.matchMedia('(prefers-color-scheme: dark)');
 function applyDark(dark) {
   document.body.classList.toggle('dark', dark);
   document.getElementById('dark-toggle').checked = dark;
-  // Update meta theme color
   const metaColor = dark ? '#0f1410' : '#f5f7f2';
   document.getElementById('theme-color-meta').setAttribute('content', metaColor);
-  // Update badge
-  document.getElementById('mode-icon').textContent = dark ? 'dark_mode' : 'light_mode';
-  document.getElementById('mode-label').textContent = dark ? 'Nuit' : 'Jour';
-  // Remap tiles
+  // Refs masquées — sécurisées
+  const mi = document.getElementById('mode-icon');
+  const ml = document.getElementById('mode-label');
+  if (mi) mi.textContent = dark ? 'dark_mode' : 'light_mode';
+  if (ml) ml.textContent = dark ? 'Nuit' : 'Jour';
   refreshTiles();
 }
 
@@ -2049,78 +2043,215 @@ async function fetchFuelPrice(btnOrIcon) {
 }
 
 /* ================================================================
-   FUEL STATIONS MAP
+   FUEL STATIONS MAP — réécriture définitive
+   API ODS v1 (geofilter.distance) + v2.1 fallback
+   Champ géo réel : geolocalisation (pas geom)
 ================================================================ */
 let _stationMarkers = [];
 let _stationsVisible = false;
 
+/* Timeout manuel compatible tous navigateurs */
+function _fetchTimeout(url, ms) {
+  const ctrl = new AbortController();
+  const id = setTimeout(() => ctrl.abort(), ms);
+  return fetch(url, { signal: ctrl.signal }).finally(() => clearTimeout(id));
+}
+
+/* Extrait {lat, lng} depuis TOUS les formats possibles retournés par ODS */
+function _extractCoords(s) {
+  const n = v => { const f = parseFloat(v); return isNaN(f) ? null : f; };
+
+  // ── ODS v1 ──
+  // geometry GeoJSON : { type:"Point", coordinates:[lon, lat] }
+  if (Array.isArray(s.geometry?.coordinates) && s.geometry.coordinates.length === 2) {
+    const lat = n(s.geometry.coordinates[1]);
+    const lng = n(s.geometry.coordinates[0]);
+    if (lat && lng) return { lat, lng };
+  }
+  // fields.geolocalisation : [lat, lon] (format ODS v1)
+  if (Array.isArray(s.fields?.geolocalisation) && s.fields.geolocalisation.length === 2) {
+    const lat = n(s.fields.geolocalisation[0]);
+    const lng = n(s.fields.geolocalisation[1]);
+    if (lat && lng) return { lat, lng };
+  }
+
+  // ── ODS v2.1 ──
+  // geolocalisation : { lat, lon } direct
+  if (s.geolocalisation?.lat != null) {
+    const lat = n(s.geolocalisation.lat);
+    const lng = n(s.geolocalisation.lon);
+    if (lat && lng) return { lat, lng };
+  }
+  // geolocalisation : GeoJSON Point
+  if (Array.isArray(s.geolocalisation?.coordinates) && s.geolocalisation.coordinates.length === 2) {
+    const lat = n(s.geolocalisation.coordinates[1]);
+    const lng = n(s.geolocalisation.coordinates[0]);
+    if (lat && lng) return { lat, lng };
+  }
+  // geolocalisation : [lat, lon] array (v2.1 peut aussi retourner ça)
+  if (Array.isArray(s.geolocalisation) && s.geolocalisation.length === 2) {
+    const lat = n(s.geolocalisation[0]);
+    const lng = n(s.geolocalisation[1]);
+    if (lat && lng) return { lat, lng };
+  }
+  // geom : GeoJSON Point
+  if (Array.isArray(s.geom?.coordinates) && s.geom.coordinates.length === 2) {
+    const lat = n(s.geom.coordinates[1]);
+    const lng = n(s.geom.coordinates[0]);
+    if (lat && lng) return { lat, lng };
+  }
+  // champs plats latitude / longitude
+  if (s.latitude != null && s.longitude != null) {
+    const lat = n(s.latitude);
+    const lng = n(s.longitude);
+    if (lat && lng) return { lat, lng };
+  }
+  // geo_point_2d
+  if (s.geo_point_2d?.lat != null) {
+    const lat = n(s.geo_point_2d.lat);
+    const lng = n(s.geo_point_2d.lon);
+    if (lat && lng) return { lat, lng };
+  }
+  return null;
+}
+
+/* Normalise un prix ODS (peut être en centimes×10 ou euros) */
+function _normPrice(v) {
+  const n = parseFloat(v);
+  if (isNaN(n) || n <= 0) return null;
+  const euro = n > 20 ? n / 1000 : n;
+  return (euro >= 0.5 && euro <= 5.0) ? euro.toFixed(3) : null;
+}
+
 async function toggleFuelStations(btn) {
   haptic('medium');
+
   if (_stationsVisible) {
     clearFuelStations();
     btn.classList.remove('fab-stations-active');
     toast('Stations masquées');
     return;
   }
+
+  const origHTML = btn.innerHTML;
   btn.innerHTML = '<div class="spin"></div>';
   btn.disabled  = true;
 
   try {
-    let center;
-    // Prefer route midpoint, fallback to map center
-    if (_routeCoords && _routeCoords.length > 1) {
-      const mid = _routeCoords[Math.floor(_routeCoords.length / 2)];
-      center = { lat: mid.lat, lng: mid.lng };
-    } else {
-      const c = map.getCenter();
-      center = { lat: c.lat, lng: c.lng };
+    const mc = map.getCenter();
+    const center = (_routeCoords?.length > 1)
+      ? (() => { const m = _routeCoords[Math.floor(_routeCoords.length / 2)]; return { lat: m.lat, lng: m.lng }; })()
+      : { lat: mc.lat, lng: mc.lng };
+
+    const DATASET = 'prix-des-carburants-en-france-flux-instantane-v2';
+    let rawList = [];
+
+    /* ── Tentative 1 : ODS v1 geofilter.distance (la plus fiable) ── */
+    try {
+      const url = `https://data.economie.gouv.fr/api/records/1.0/search/?` +
+        `dataset=${DATASET}` +
+        `&geofilter.distance=${center.lat},${center.lng},20000` +
+        `&rows=50&sort=-gazole_prix` +
+        `&fields=id,nom,adresse,ville,cp,gazole_prix,sp95_prix,e10_prix,sp98_prix,e85_prix,gplc_prix,geolocalisation`;
+      const r = await _fetchTimeout(url, 10000);
+      if (r.ok) {
+        const d = await r.json();
+        rawList = (d.records || []).map(rec => ({
+          ...rec.fields,
+          geometry: rec.geometry   // conserver la géométrie GeoJSON
+        }));
+        console.log(`[Stations v1] ${rawList.length} résultats`);
+      } else {
+        console.warn('[Stations v1] HTTP', r.status);
+      }
+    } catch (e) { console.warn('[Stations v1]', e.message); }
+
+    /* ── Tentative 2 : ODS v2.1 distance() sur geolocalisation ── */
+    if (!rawList.length) {
+      try {
+        const FIELDS = 'id,nom,adresse,ville,cp,gazole_prix,sp95_prix,e10_prix,sp98_prix,e85_prix,gplc_prix,geolocalisation,latitude,longitude';
+        const WHERE  = encodeURIComponent(
+          `distance(geolocalisation, GEOSHAPE'POINT(${center.lng} ${center.lat})', 20km)` +
+          ` AND (gazole_prix IS NOT NULL OR e10_prix IS NOT NULL OR sp95_prix IS NOT NULL)`
+        );
+        const url = `https://data.economie.gouv.fr/api/explore/v2.1/catalog/datasets/${DATASET}/records?select=${FIELDS}&where=${WHERE}&limit=50`;
+        const r = await _fetchTimeout(url, 10000);
+        if (r.ok) {
+          const d = await r.json();
+          rawList = d.results || [];
+          console.log(`[Stations v2.1 geo] ${rawList.length} résultats`);
+        } else {
+          console.warn('[Stations v2.1 geo] HTTP', r.status);
+        }
+      } catch (e) { console.warn('[Stations v2.1 geo]', e.message); }
     }
 
-    const radius = 15; // km
-    const fields = 'id,nom,adresse,ville,cp,e10_prix,sp98_prix,sp95_prix,gazole_prix,e85_prix,gplc_prix,geom';
-    const where  = encodeURIComponent(
-      `within_distance(geom, geom'POINT(${center.lng} ${center.lat})', ${radius}km) ` +
-      `AND (e10_prix IS NOT NULL OR sp98_prix IS NOT NULL OR gazole_prix IS NOT NULL)`
-    );
-    const url = `https://data.economie.gouv.fr/api/explore/v2.1/catalog/datasets/prix-des-carburants-en-france-flux-instantane-v2/records?select=${fields}&where=${where}&limit=40`;
+    /* ── Tentative 3 : ODS v2.1 sans filtre géo (tri côté client) ── */
+    if (!rawList.length) {
+      try {
+        const FIELDS = 'id,nom,adresse,ville,cp,gazole_prix,sp95_prix,e10_prix,sp98_prix,e85_prix,gplc_prix,geolocalisation,latitude,longitude';
+        const WHERE  = encodeURIComponent(
+          `gazole_prix IS NOT NULL OR e10_prix IS NOT NULL OR sp95_prix IS NOT NULL`
+        );
+        const url = `https://data.economie.gouv.fr/api/explore/v2.1/catalog/datasets/${DATASET}/records?select=${FIELDS}&where=${WHERE}&limit=100`;
+        const r = await _fetchTimeout(url, 12000);
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        const d = await r.json();
+        rawList = d.results || [];
+        console.log(`[Stations v2.1 all] ${rawList.length} résultats`);
+      } catch (e) { console.warn('[Stations v2.1 all]', e.message); throw e; }
+    }
 
-    const resp = await fetch(url, { signal: AbortSignal.timeout(10000) });
-    if (!resp.ok) throw new Error('API error ' + resp.status);
-    const data = await resp.json();
-    const stations = data.results || [];
-
-    if (!stations.length) {
-      toast('Aucune station trouvée dans ce périmètre', true);
+    if (!rawList.length) {
+      toast('Aucune station disponible', true);
       return;
     }
 
-    stations.forEach(s => {
-      if (!s.geom?.lon || !s.geom?.lat) return;
-      const lat = s.geom.lat, lng = s.geom.lon;
+    /* Extraire les coordonnées, filtrer, trier par distance */
+    const parsed = rawList
+      .map(s => ({ s, coords: _extractCoords(s) }))
+      .filter(({ coords }) => coords !== null)
+      .map(({ s, coords }) => {
+        const dlat = coords.lat - center.lat;
+        const dlng = coords.lng - center.lng;
+        return { s, coords, dist: Math.sqrt(dlat * dlat + dlng * dlng) };
+      })
+      .sort((a, b) => a.dist - b.dist)
+      .slice(0, 40);
 
+    console.log(`[Stations] ${parsed.length} avec coordonnées valides`);
+
+    if (!parsed.length) {
+      toast('Coordonnées GPS introuvables', true);
+      return;
+    }
+
+    parsed.forEach(({ s, coords }) => {
+      const nom = (s.nom || s.fields?.nom || 'Station').replace(/"/g, '&quot;');
       const icon = L.divIcon({
-        html: `<div class="fuel-pin" title="${s.nom || 'Station'}">⛽</div>`,
+        html: `<div class="fuel-pin" title="${nom}">⛽</div>`,
         className: '',
         iconSize:   [36, 36],
         iconAnchor: [18, 18],
-        popupAnchor:[0, -20]
+        popupAnchor:[0, -22]
       });
-
-      const marker = L.marker([lat, lng], { icon }).addTo(map);
-      marker.bindPopup(_buildStationPopup(s), { maxWidth: 260, className: 'fuel-popup' });
+      const marker = L.marker([coords.lat, coords.lng], { icon }).addTo(map);
+      marker.bindPopup(_buildStationPopup(s), { maxWidth: 270 });
       _stationMarkers.push(marker);
     });
 
     _stationsVisible = true;
     btn.classList.add('fab-stations-active');
-    toast(`${_stationMarkers.length} stations affichées`);
+    const n = _stationMarkers.length;
+    toast(`${n} station${n > 1 ? 's' : ''} affichée${n > 1 ? 's' : ''}`);
     haptic('success');
 
   } catch (err) {
-    toast('Impossible de charger les stations', true);
+    console.error('[Stations] Erreur finale :', err);
+    toast('Service stations indisponible', true);
     haptic('error');
   } finally {
-    btn.innerHTML = '<span class="material-symbols-rounded">local_gas_station</span>';
+    btn.innerHTML = origHTML;
     btn.disabled  = false;
   }
 }
@@ -2132,32 +2263,39 @@ function clearFuelStations() {
 }
 
 function _buildStationPopup(s) {
-  const normalize = v => {
-    const n = parseFloat(v);
-    if (isNaN(n) || n <= 0) return null;
-    return n > 20 ? (n / 1000).toFixed(3) : n.toFixed(3);
-  };
+  /* Gère les champs directement sur s (v2.1) OU dans s.fields (v1) */
+  const f = key => s[key] ?? s.fields?.[key];
 
-  const prices = [
-    { label: 'E10',    val: normalize(s.e10_prix),   field: 'e10'   },
-    { label: 'SP98',   val: normalize(s.sp98_prix),  field: 'sp98'  },
-    { label: 'SP95',   val: normalize(s.sp95_prix),  field: 'sp95'  },
-    { label: 'Gazole', val: normalize(s.gazole_prix),field: 'gazole'},
-    { label: 'E85',    val: normalize(s.e85_prix),   field: 'e85'   },
-    { label: 'GPL',    val: normalize(s.gplc_prix),  field: 'gpl'   },
-  ].filter(p => p.val !== null);
+  const nom    = f('nom')    || 'Station service';
+  const adresse= f('adresse') || '';
+  const ville  = f('ville')  || '';
 
-  const pricesHtml = prices.map(p =>
-    `<div class="fuel-price-chip" onclick="applyStationPrice('${p.val}','${p.label}')" title="Utiliser ce prix">
-       <span class="fp-label">${p.label}</span>
-       <span class="fp-val">${p.val} €</span>
-     </div>`
-  ).join('');
+  const priceMap = [
+    { label: 'E10',    key: 'e10_prix'   },
+    { label: 'SP98',   key: 'sp98_prix'  },
+    { label: 'SP95',   key: 'sp95_prix'  },
+    { label: 'Gazole', key: 'gazole_prix'},
+    { label: 'E85',    key: 'e85_prix'   },
+    { label: 'GPL',    key: 'gplc_prix'  },
+  ];
+
+  const prices = priceMap
+    .map(({ label, key }) => ({ label, val: _normPrice(f(key)) }))
+    .filter(p => p.val !== null);
+
+  const pricesHtml = prices.length
+    ? prices.map(p =>
+        `<div class="fuel-price-chip" onclick="applyStationPrice('${p.val}','${p.label}')" title="Utiliser ce prix">
+           <span class="fp-label">${p.label}</span>
+           <span class="fp-val">${p.val} €</span>
+         </div>`
+      ).join('')
+    : '<em style="font-size:0.78rem;opacity:0.65;grid-column:1/-1;">Prix non disponibles</em>';
 
   return `<div class="fuel-popup-inner">
-    <div class="fuel-popup-name">${s.nom || 'Station service'}</div>
-    <div class="fuel-popup-addr">${[s.adresse, s.ville].filter(Boolean).join(' — ')}</div>
-    <div class="fuel-popup-prices">${pricesHtml || '<em style="font-size:0.78rem;color:var(--outline)">Prix non disponibles</em>'}</div>
+    <div class="fuel-popup-name">${nom}</div>
+    ${(adresse || ville) ? `<div class="fuel-popup-addr">${[adresse, ville].filter(Boolean).join(' — ')}</div>` : ''}
+    <div class="fuel-popup-prices">${pricesHtml}</div>
     <div class="fuel-popup-hint">Appuyez sur un prix pour l'utiliser</div>
   </div>`;
 }
